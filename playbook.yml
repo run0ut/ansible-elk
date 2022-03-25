@@ -1,0 +1,123 @@
+---
+- name: start docker with centos7
+  hosts: docker-hosts
+  tasks:
+    - name: download roles
+      shell: ansible-galaxy install --roles-path ./roles/ -r requirements.yml
+    - name: Start a container
+      docker_container:
+        name: centos7
+        image: docker.io/pycontribs/centos:7
+        state: started
+        published_ports:
+          - 0.0.0.0:5601:5601/tcp
+          - 0.0.0.0:9200:9200/tcp
+        tty: yes
+        interactive : yes 
+
+- name: Converge
+  hosts: docker-containers
+  tasks:
+    - name: "Include logstash-role"
+      include_role:
+        name: "logstash-role"
+
+- name: Verify
+  hosts: docker-containers
+  vars:
+    elk_version: "7.14.0"
+    logstash_home: /opt/logstash/{{ elk_version }}
+    filebeat_output_destination: "elastic"
+    filebeat_setup_kibana: true
+    filebeat_version: "{{ elk_version }}"
+  gather_facts: true
+  tasks:
+
+    ### Развернёт 2/3 ELK стека и настроит дешборды в Кибане
+    - name: get elastic
+      include_role:
+        name: "elastic-role"
+    - name: get kibana
+      include_role:
+        name: "kibana-role"
+
+    ### Проверка, что веб функционирует корректно. 
+    ### Могут быть редиректы, считаем что это ок.
+    - name: test elastic web
+      uri:
+        url: "http://{{ ansible_nodename }}:9200/_cat/indices?v"
+        status_code: 
+          - 200
+          - 302
+        follow_redirects: safe
+        return_content: yes
+      register: curl_elastic
+
+    - name: test kibana web
+      uri:
+        url: "http://{{ ansible_nodename }}:5601/app/home"
+        status_code:
+          - 200
+          - 302
+        follow_redirects: safe
+        return_content: yes
+      register: curl_kibana
+      until: curl_kibana.status in [200,302]
+      retries: 10
+      delay: 60
+
+    # Первый запуск, чтобы настроить дешборды Кибаны
+    - name: apply filebeat-role to setup kibana dashboards
+      include_role:
+        name: "filebeat-role"
+
+    ### Проверит, что процесс Файлбит запущен и выведет ID
+    - name: check filebeat is running
+      shell:
+        cmd: docker exec {{ ansible_nodename }} pgrep filebeat
+      register: filebeat_running
+      changed_when: false
+      delegate_to: 127.0.0.1
+
+    - name: print what docker exec returned 
+      debug: msg="filebeat process id = {{ filebeat_running.stdout }}"
+
+    ### Проверка, что в Эластике есть индекс сданными от Файлбита
+    - name: check filebeat index exists
+      uri:
+        url: "http://{{ ansible_nodename }}:9200/_cat/indices/filebeat-{{ filebeat_version }}-*?format=json"
+        method: GET
+        return_content: yes
+        status_code: 200
+      register: elastic_filebeat_index
+
+    ### Покажет количество документов (=данных) в индексе или упадёт, если их нет.
+    - name: checkif index not empty
+      debug: msg="number of documents in filebeat index = {{ elastic_filebeat_index.json[0]['docs.count'] }}"
+      failed_when: elastic_filebeat_index.json[0]['docs.count'] == "0"
+
+    - name: apply filebeat-role to setup kibana dashboards
+      vars:
+        filebeat_output_destination: "logstash"
+      include_role:
+        name: "filebeat-role"
+
+    ### Проверим, что Logstash отвечает адекватно.
+    - name: netology85, optional, task №3
+      block: 
+      - name: make shure there are no any running logstashes
+        shell:
+          cmd: docker exec {{ ansible_nodename }} bash -c 'kill -9 $(pgrep {{ logstash_home }}/jdk/bin/java -f)'
+        changed_when: false
+        failed_when: false
+        delegate_to: 127.0.0.1
+      - name: check logstash will answer normally
+        shell:
+          cmd: docker exec {{ ansible_nodename }} {{ logstash_home }}/bin/logstash -e 'input { stdin { } } output { stdout {} }'
+        register: netology85_opt_3
+        changed_when: false
+        delegate_to: 127.0.0.1
+      - name: print logstash answer if previous command exited well (retcode = 0)
+        debug: msg="{{ netology85_opt_3.stdout_lines }}"
+        # debug: msg="{{ netology85_opt_3 }}"
+        when: netology85_opt_3.rc == 0

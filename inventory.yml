@@ -1,0 +1,14 @@
+all:
+  hosts:
+    node:
+      ansible_connection: local
+      ansible_python_interpreter: /usr/bin/python3
+    centos7:
+      ansible_connection: community.docker.docker
+  children:
+    docker-hosts:
+      hosts:
+        node:
+    docker-containers:
+      hosts:
+        centos7:
