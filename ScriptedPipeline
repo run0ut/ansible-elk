@@ -2,7 +2,7 @@ node('docker'){
     stage('Checkout') {
         git branch: 'main', credentialsId: '0b54df1a-ee4b-40da-b8bb-a70fcf46e73f', url: 'git@github.com:run0ut/ansible-elk.git'
     }
-    stage('Install molecule') {
+    stage('Install requirements') {
         sh 'pip3 install -r requirements.txt'
         sh 'ansible-galaxy install --roles-path ./roles/ -r requirements.yml'
     }
